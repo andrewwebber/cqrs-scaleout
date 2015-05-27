@@ -10,7 +10,7 @@ import (
 
 func main() {
 	// Create a new event bus
-	bus := rabbit.NewCommandBus("amqp://guest:guest@localhost:5672/", "rabbit_testcommands", "testing.commands")
+	bus := rabbit.NewCommandBus("amqp://guest:guest@localhost:5672/", "rabbit_scaleout", "testing.scaleout")
 
 	// Register types
 	commandTypeCache := cqrs.NewTypeRegistry()
@@ -26,17 +26,19 @@ func main() {
 	receiveCommandChannel := make(chan cqrs.CommandTransactedAccept)
 	// Start receiving events by passing these channels to the worker thread (go routine)
 	if err := bus.ReceiveCommands(cqrs.CommandReceiverOptions{commandTypeCache, closeChannel, errorChannel, receiveCommandChannel}); err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
 	// Wait on multiple channels using the select control flow.
-	select {
-	case command := <-receiveCommandChannel:
-		sampleCommand := command.Command.Body.(scaleout.SampleCommand)
-		log.Println(sampleCommand.Message)
-		command.ProcessedSuccessfully <- true
-		// Receiving on this channel signifys an error has occured work processor side
-	case err := <-errorChannel:
-		panic(err)
+	for {
+		select {
+		case command := <-receiveCommandChannel:
+			sampleCommand := command.Command.Body.(scaleout.SampleCommand)
+			log.Println(sampleCommand.Message)
+			command.ProcessedSuccessfully <- true
+			// Receiving on this channel signifys an error has occured work processor side
+		case err := <-errorChannel:
+			panic(err)
+		}
 	}
 }

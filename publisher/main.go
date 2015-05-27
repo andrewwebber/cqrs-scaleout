@@ -11,7 +11,7 @@ import (
 
 func main() {
 	// Create a new event bus
-	bus := rabbit.NewCommandBus("amqp://guest:guest@localhost:5672/", "rabbit_testcommands", "testing.commands")
+	bus := rabbit.NewCommandBus("amqp://guest:guest@localhost:5672/", "rabbit_scaleout", "testing.scaleout")
 
 	// Register types
 	commandType := reflect.TypeOf(scaleout.SampleCommand{})
