@@ -3,11 +3,14 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"strings"
+	"reflect"
 	"time"
 
-	"github.com/streadway/amqp"
+	"github.com/andrewwebber/cqrs"
+
+	"github.com/andrewwebber/cqrs/rabbit"
+
+	"github.com/andrewwebber/cqrs-scaleout"
 )
 
 func failOnError(err error, msg string) {
@@ -18,41 +21,25 @@ func failOnError(err error, msg string) {
 }
 
 func main() {
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
+	// Create a new event bus
+	bus := rabbit.NewCommandBus("amqp://guest:guest@localhost:5672/", "scaleout4", "scaleout4")
 
-	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
+	// Register types
+	commandType := reflect.TypeOf(scaleout.SampleCommand{})
+	commandTypeCache := cqrs.NewTypeRegistry()
+	commandTypeCache.RegisterType(scaleout.SampleCommand{})
 
-	err = ch.ExchangeDeclare("test_scaleout2", "topic", true, false, false, false, nil)
-	failOnError(err, "exchange")
+	// Publish a simple event to the exchange http://www.rabbitmq.com/tutorials/tutorial-three-python.html
+	log.Println("Publishing Commands")
 
 	for {
-		time.Sleep(2 * time.Second)
+		time.Sleep(1 * time.Second)
 		for i := 0; i < 10; i++ {
-			err = ch.Publish(
-				"test_scaleout2", // exchange
-				"scaleout_queue", // routing key
-				false,            // mandatory
-				false,
-				amqp.Publishing{
-					DeliveryMode: amqp.Persistent,
-					ContentType:  "text/plain",
-					Body:         []byte(fmt.Sprintf("scaleout_queue message %d", i)),
-				})
-			failOnError(err, "Failed to publish a message")
+			if err := bus.PublishCommands([]cqrs.Command{cqrs.Command{
+				CommandType: commandType.String(),
+				Body:        scaleout.SampleCommand{"rabbit_TestCommandBus"}}}); err != nil {
+				failOnError(err, "publish commands")
+			}
 		}
 	}
-}
-
-func bodyFrom(args []string) string {
-	var s string
-	if (len(args) < 2) || os.Args[1] == "" {
-		s = "hello"
-	} else {
-		s = strings.Join(args[1:], " ")
-	}
-	return s
 }
