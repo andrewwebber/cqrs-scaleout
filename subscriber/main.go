@@ -1,44 +1,72 @@
 package main
 
 import (
-	"brainloop/util/cqrs"
-	"brainloop/util/cqrs/rabbit"
+	"bytes"
+	"fmt"
 	"log"
+	"time"
 
-	"github.com/andrewwebber/cqrs-scaleout"
+	"github.com/streadway/amqp"
 )
 
+func failOnError(err error, msg string) {
+	if err != nil {
+		log.Fatalf("%s: %s", msg, err)
+		panic(fmt.Sprintf("%s: %s", msg, err))
+	}
+}
+
 func main() {
-	// Create a new event bus
-	bus := rabbit.NewCommandBus("amqp://guest:guest@localhost:5672/", "rabbit_scaleout", "testing.scaleout")
+	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	failOnError(err, "Failed to connect to RabbitMQ")
+	defer conn.Close()
 
-	// Register types
-	commandTypeCache := cqrs.NewTypeRegistry()
-	commandTypeCache.RegisterType(scaleout.SampleCommand{})
+	ch, err := conn.Channel()
+	failOnError(err, "Failed to open a channel")
+	defer ch.Close()
 
-	// Create communication channels
-	//
-	// for closing the queue listener,
-	closeChannel := make(chan chan error)
-	// receiving errors from the listener thread (go routine)
-	errorChannel := make(chan error)
-	// and receiving commands from the queue
-	receiveCommandChannel := make(chan cqrs.CommandTransactedAccept)
-	// Start receiving events by passing these channels to the worker thread (go routine)
-	if err := bus.ReceiveCommands(cqrs.CommandReceiverOptions{commandTypeCache, closeChannel, errorChannel, receiveCommandChannel}); err != nil {
-		log.Fatal(err)
+	err = ch.ExchangeDeclare("test_scaleout2", "topic", true, false, false, false, nil)
+	failOnError(err, "exchange")
+
+	if _, err = ch.QueueDeclare("scaleout_queue", true, false, false, false, nil); err != nil {
+		log.Fatalf("queue.declare: %v", err)
 	}
 
-	// Wait on multiple channels using the select control flow.
-	for {
-		select {
-		case command := <-receiveCommandChannel:
-			sampleCommand := command.Command.Body.(scaleout.SampleCommand)
-			log.Println(sampleCommand.Message)
-			command.ProcessedSuccessfully <- true
-			// Receiving on this channel signifys an error has occured work processor side
-		case err := <-errorChannel:
-			panic(err)
+	if err = ch.QueueBind("scaleout_queue", "scaleout_queue", "test_scaleout2", false, nil); err != nil {
+		log.Fatalf("queue.bind: %v", err)
+	}
+
+	failOnError(err, "Failed to declare a queue")
+	err = ch.Qos(
+		3,     // prefetch count
+		0,     // prefetch size
+		false, // global
+	)
+	failOnError(err, "Failed to set QoS")
+
+	msgs, err := ch.Consume(
+		"scaleout_queue", // queue
+		"scaleout_queue", // consumer
+		false,            // auto-ack
+		false,            // exclusive
+		false,            // no-local
+		false,            // no-wait
+		nil,              // args
+	)
+	failOnError(err, "Failed to register a consumer")
+
+	forever := make(chan bool)
+
+	go func() {
+		for d := range msgs {
+			log.Printf("Received a message: %s", d.Body)
+			d.Ack(false)
+			dot_count := bytes.Count(d.Body, []byte("."))
+			t := time.Duration(dot_count)
+			time.Sleep(t * time.Second)
 		}
-	}
+	}()
+
+	log.Printf(" [*] Waiting for messages. To exit press CTRL+C")
+	<-forever
 }
